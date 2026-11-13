@@ -1,0 +1,379 @@
+diff --git a/data/dataloader.py b/data/dataloader.py
+index 85a0fcd..947f041 100644
+--- a/data/dataloader.py
++++ b/data/dataloader.py
+@@ -126,15 +126,15 @@ class CardiumDataset(Dataset):
+             image_path, patient_info, patient_id, label = self.data[idx]
+         else:
+             image_path, patient_id, label = self.data[idx]
+-
+-        if image_path in self.cache:
+-            image = self.cache[image_path]
+-        else:
+-            image = Image.open(image_path).convert("RGB")
+-            image = self.transform(np.array(image))
+-            self.cache[image_path] = image
+-
++    
++        image = Image.open(image_path).convert("RGB")
++        image = self.transform(np.array(image))
++    
+         if self.multimodal:
+-            return (image, torch.tensor(patient_info, dtype=torch.float32), patient_id), label 
+-        else: 
+-            return (image, patient_id), label
+\ No newline at end of file
++            return (
++                image,
++                torch.tensor(patient_info, dtype=torch.float32),
++                patient_id
++            ), label
++    
++        return (image, patient_id), label
+\ No newline at end of file
+diff --git a/data/load_img_data.py b/data/load_img_data.py
+index ab4c0f6..8049698 100644
+--- a/data/load_img_data.py
++++ b/data/load_img_data.py
+@@ -3,6 +3,8 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
+ import os 
+ import numpy as np
+ import random
++import json
++from torch.utils.data import Subset
+ 
+ seed = 42
+ torch.manual_seed(seed)
+@@ -12,55 +14,101 @@ torch.backends.cudnn.benchmark = False
+ np.random.seed(seed)
+ random.seed(seed)
+ 
+-def create_image_dataloaders(dataset_dir, dataset_class, transform_train, transform_test, batch_size, args):
+-    """
+-    Creates dataloaders for training and testing with weighted sampling for class imbalance.
+-
+-    Args:
+-        train_dir (str): Path to training dataset directory.
+-        val_dir (str): Path to validation dataset directory.
+-        test_dir (str): Path to testing dataset directory.
+-        dataset_class (Dataset): Custom dataset class.
+-        transform_train (callable): Transformations for training dataset.
+-        transform_test (callable): Transformations for validation and testing datasets.
+-        batch_size (int): Batch size for the dataloaders.
+-
+-    Returns:
+-        tuple: train_loader, test_loader
+-    """
+-    # Train and test directories
++def create_image_dataloaders(
++    dataset_dir, dataset_class,
++    transform_train, transform_test,
++    batch_size, args
++):
++    fold_name = os.path.basename(os.path.normpath(dataset_dir))
++    split_path = os.path.join(
++        "experiment_splits",
++        f"{fold_name}_split.json"
++    )
++
++    with open(split_path) as f:
++        split = json.load(f)
++
++    train_ids = set(split["train_patient_ids"])
++    val_ids = set(split["val_patient_ids"])
++
+     train_dir = os.path.join(dataset_dir, "train")
+     test_dir = os.path.join(dataset_dir, "test")
+-    
+-    # Train dataset
+-    dataset_train = dataset_class(root=train_dir,  transform=transform_train)
+-        
+-    # Calculate class weights for weighted sampling and define dataloader
++
++    train_dataset = dataset_class(
++        root=train_dir, transform=transform_train
++    )
++    val_dataset = dataset_class(
++        root=train_dir, transform=transform_test
++    )
++    test_dataset = dataset_class(
++        root=test_dir, transform=transform_test
++    )
++
++    train_indices = [
++        i for i, item in enumerate(train_dataset.data)
++        if item[1] in train_ids
++    ]
++    val_indices = [
++        i for i, item in enumerate(val_dataset.data)
++        if item[1] in val_ids
++    ]
++
++    assert len(train_indices) > 0
++    assert len(val_indices) > 0
++    assert set(train_indices).isdisjoint(val_indices)
++
++    train_subset = Subset(train_dataset, train_indices)
++    val_subset = Subset(val_dataset, val_indices)
++
+     if args.sampling:
+-        print("Implementing sampling")
+-        num_negatives = sum(1 for _, label in dataset_train if label == 0) #2789 
+-        num_positives = sum(1 for _, label in dataset_train if label == 1) #470 
+-        
+-        class_sample_counts = [num_negatives, num_positives]
+-        class_weights = 1. / torch.tensor(class_sample_counts, dtype=torch.float)
++        labels = [
++            train_dataset.labels[i] for i in train_indices
++        ]
++        counts = np.bincount(labels, minlength=2)
++        assert np.all(counts > 0)
+ 
+-        # Calculate sample weights
+-        sample_weights = [class_weights[label] for _, label in dataset_train]
++        class_weights = 1.0 / torch.tensor(
++            counts, dtype=torch.float32
++        )
++        sample_weights = class_weights[
++            torch.tensor(labels, dtype=torch.long)
++        ]
+ 
+-        # Create WeightedRandomSampler
+-        sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
++        sampler = WeightedRandomSampler(
++            sample_weights,
++            num_samples=len(sample_weights),
++            replacement=True
++        )
+ 
+-        # Train DataLoader
+-        train_loader = DataLoader(dataset_train, batch_size=batch_size, sampler=sampler, shuffle=False, num_workers=8, pin_memory=True)
++        train_loader = DataLoader(
++            train_subset, batch_size=batch_size,
++            sampler=sampler, num_workers=8,
++            pin_memory=True
++        )
+     else:
+-        print("No sampling implemented")
+-        train_loader = DataLoader(dataset_train, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
+-        num_negatives = np.sum(np.array(dataset_train.labels) == 0)
+-        num_positives = np.sum(np.array(dataset_train.labels) == 1)
+-        sample_weights = None
++        train_loader = DataLoader(
++            train_subset, batch_size=batch_size,
++            shuffle=True, num_workers=8,
++            pin_memory=True
++        )
++
++    val_loader = DataLoader(
++        val_subset, batch_size=batch_size,
++        shuffle=False, num_workers=8,
++        pin_memory=True
++    )
++
++    test_loader = DataLoader(
++        test_dataset, batch_size=batch_size,
++        shuffle=False, num_workers=8,
++        pin_memory=True
++    )
+ 
+-    # Test dataset and dataLoader
+-    dataset_test = dataset_class(root=test_dir, transform=transform_test)    
+-    test_loader = DataLoader(dataset_test, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
++    print(
++        f"{fold_name}: "
++        f"{len(train_subset)} train images, "
++        f"{len(val_subset)} validation images, "
++        f"{len(test_dataset)} test images"
++    )
+ 
+-    return train_loader, test_loader
+\ No newline at end of file
++    return train_loader, val_loader, test_loader
+\ No newline at end of file
+diff --git a/img_script/inference_img.py b/img_script/inference_img.py
+index a5f5854..822f165 100644
+--- a/img_script/inference_img.py
++++ b/img_script/inference_img.py
+@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
+ CARDIUM_path = pathlib.Path(__file__).resolve().parent.parent
+ sys.path.append(str(CARDIUM_path))
+ from data.transformations import transform_train, transform_test
+-from data.load_img_data import create_dataloaders
++from data.load_img_data import create_image_dataloaders
+ from data.dataloader import CardiumDataset
+ from img_script.img_models.get_img_model import ImageModel
+ from utils import *
+@@ -45,7 +45,7 @@ def main(args):
+         dataset_path = f"{args.image_folder_path}/fold_{fold+1}" # Without trimester separation
+ 
+         # Create data loaders for the current fold
+-        _, test_loader = create_dataloaders(
++        _, test_loader = create_image_dataloaders(
+             dataset_dir = dataset_path,
+             dataset_class=CardiumDataset,
+             transform_train=transform_train,
+@@ -60,11 +60,17 @@ def main(args):
+         img_model = img_model.to(device)
+ 
+         img_checkpoint = os.path.join(args.img_checkpoint, f"fold{fold}_best_model.pth")
+-        img_checkpoint = torch.load(img_checkpoint, map_location = torch.device("cuda"), weights_only=True)
+-        img_model.load_state_dict(img_checkpoint, strict=False)
++        img_checkpoint = torch.load(img_checkpoint, map_location=device, weights_only=True)
++        
++        load_result = img_model.load_state_dict(img_checkpoint, strict=False)
++        
++        print(f"\nFold {fold} checkpoint verification:")
++        print("Missing keys:", load_result.missing_keys)
++        print("Unexpected keys:", load_result.unexpected_keys)
++        
+         img_model = img_model.to(device)
+ 
+-        # Inference
++        # Inference	
+         y_true, y_score = inference_image_model(img_model, test_loader, device)
+         f1, accuracy, precision, recall = compute_patient_metrics(y_score=y_score, y_true=y_true, 
+                                                                   mode="test", fold=fold, log_wandb=False)
+@@ -85,4 +91,4 @@ def main(args):
+ if __name__ == "__main__":
+     # Assuming get_main_parser() is defined elsewhere
+     args = get_main_parser()
+-    main(args)
+\ No newline at end of file
++    main(args)
+diff --git a/img_script/main_img.py b/img_script/main_img.py
+index 0bea35a..31f9440 100644
+--- a/img_script/main_img.py
++++ b/img_script/main_img.py
+@@ -23,9 +23,11 @@ args = get_main_parser()
+ def main(args): 
+     # Initialize experiment in Weights & Biases
+     exp_name = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+-    wandb.init(project="CARDIUM", 
+-            entity="spared_v2", 
+-            name=exp_name)
++    wandb.init(project="Cardium_RunPod",
++        entity="4314422-university-of-the-western-cape", 
++        name=exp_name, 
++        config=vars(args)
++    )
+ 
+     wandb.log({"args": vars(args)})
+ 
+@@ -44,7 +46,7 @@ def main(args):
+         # Create Dataloaders for the current fold
+         dataset_path = f"{args.image_folder_path}/fold_{fold+1}" # Without trimester separation
+ 
+-        train_loader, test_loader = create_image_dataloaders(
++        train_loader, val_loader, test_loader = create_image_dataloaders(
+             dataset_dir = dataset_path,
+             dataset_class=CardiumDataset, 
+             transform_train=transform_train, 
+@@ -59,6 +61,23 @@ def main(args):
+         device = "cuda" if torch.cuda.is_available() else "cpu"
+         model = ImageModel(args)
+         model = model.build_model()
++        # Initialise from the authors' CARDIUM image checkpoints
++        #checkpoint_path = os.path.join(
++         #   args.img_checkpoint,
++          #  f"fold{fold}_best_model.pth"
++        #)
++        
++        #print(f"Loading pretrained CARDIUM weights: {checkpoint_path}")
++        
++        #state_dict = torch.load(
++            #checkpoint_path,
++            #map_location="cpu",
++            #weights_only=True
++        #)
++        
++        #model.load_state_dict(state_dict, strict=True)
++        
++        print(f"Successfully loaded pretrained weights for fold {fold}")
+ 
+         # Move the model to GPU (if available)
+         model = model.to(device)
+@@ -84,6 +103,7 @@ def main(args):
+                                optimizer, 
+                                device, 
+                                train_loader, 
++                               val_loader,
+                                test_loader, 
+                                fold, 
+                                save_path)
+@@ -100,7 +120,7 @@ def main(args):
+ 
+         # --- Test phase ---
+         print("Loading the best model for test evaluation...")
+-        model.load_state_dict(torch.load(save_path))                                                    
++        model.load_state_dict(torch.load(save_path, map_location=device, weights_only=True))                                                 
+         f1_test, accuracy_test, precision_test, recall_test = trainer.test_one_epoch(model)
+ 
+         test_metrics["F1 Score"].append(f1_test)
+diff --git a/img_script/run_img.py b/img_script/run_img.py
+index 36f3c05..293d1d4 100644
+--- a/img_script/run_img.py
++++ b/img_script/run_img.py
+@@ -12,36 +12,23 @@ from utils import *
+ 
+ 
+ class ImageTrainer:
+-    def __init__(self, model, args, criterion, optimizer, device,
+-                 train_loader, test_loader, fold, save_path):
+-        """
+-        Training and validation loop for multimodal model.
+-
+-        Args:
+-            model (torch.nn.Module): TabEncoder model.
+-            criterion (torch.nn.Module): Loss function (BCEWithLogitsLoss).
+-            optimizer (torch.optim.Optimizer): Optimizer for training (AdamW).
+-            device (torch.device): Device to run training on ("cpu" or "cuda").
+-            train_loader (DataLoader): DataLoader for the training set.
+-            val_loader (DataLoader): DataLoader for the validation set.
+-            train_dataset (torch.utils.data.Dataset): Training dataset (needed for HNM resampling).
+-            fold (int): Fold index for cross-validation (used in filenames).
+-            save_path (str): Path to save best model.
+-        """
++    def __init__(
++        self, model, args, criterion, optimizer, device,
++        train_loader, val_loader, test_loader, fold, save_path
++    ):
+         self.model = model
+         self.args = args
+         self.criterion = criterion
+         self.optimizer = optimizer
+         self.device = device
+-
++    
+         self.train_loader = train_loader
++        self.val_loader = val_loader
+         self.test_loader = test_loader
+-
++    
+         self.fold = fold
+         self.save_path = save_path
+-
+-        self.best_f1 = 0
+-
++        self.best_f1 = -1.0
+     def train_one_epoch(self, epoch):
+         """
+         Train the model for one epoch.
+@@ -106,7 +93,7 @@ class ImageTrainer:
+         
+         # --- 1. Iterate over DataLoader ---
+         with torch.no_grad():
+-            for inputs, targets in tqdm(self.test_loader, desc=f"Validating", unit="batch"):
++            for inputs, targets in tqdm(self.val_loader, desc="Validating", unit="batch"):
+                 # Move inputs and targets to the appropriate device
+                 inputs, patient_ids = inputs[0].to(self.device), inputs[1]
+                 targets = targets.unsqueeze(1).to(self.device)
+@@ -129,7 +116,7 @@ class ImageTrainer:
+                     y_true_patient[pid] = target  # True label is same for all occurrences of patient
+ 
+         # --- 2. Average loss across batches ---
+-        avg_loss = total_loss / len(self.test_loader)
++        avg_loss = total_loss / len(self.val_loader)
+         print(f"val Loss: {avg_loss:.4f}")
+         wandb.log({"val_loss": avg_loss})
+ 

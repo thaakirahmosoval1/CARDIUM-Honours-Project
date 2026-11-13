@@ -1,0 +1,2 @@
+PyTorch: 2.8.0+cu128
+CUDA: 12.8

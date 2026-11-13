@@ -1,0 +1,50 @@
+__pycache__/
+img_script/wandb/
+tabular_script/wandb/
+multimodal_script/wandb/
+tabular_script/tabular_checkpoints/
+img_script/image_checkpoints/
+multimodal_script/multimodal_checkpoints/
+dataset/
+wandb/
+image_anonimization/
+cardium_data_tar_files/
+# Python environment
+cardium_env/
+*.pyc
+.ipynb_checkpoints/
+
+# Medical datasets and clinical records
+CARDIUM_dataset/
+data/tabular_data/*.json
+data/tabular_data/output_folds_final/
+experiment_splits/
+*.tar.gz
+*.zip
+
+# Model weights
+*.pth
+*.pt
+*.ckpt
+img_script/img_models/pretrained_weights/
+
+# Experiment logs
+*.log
+
+# Large generated files
+imports.txt
+
+# Private configuration
+.env
+.env.*
+.streamlit/
+config.toml
+
+# Temporary files
+*.tmp
+
+# Patient-level predictions and intermediate outputs
+*_predictions.csv
+validation_predictions.csv
+preds_fold*.npz
+.git_original_backup/
